@@ -162,6 +162,7 @@ const PROVIDERS = [
   { id: 'claude',     label: 'Claude Code',         mech: 'claude plugin install',         detect: 'command:claude' },
   { id: 'gemini',     label: 'Gemini CLI',          mech: 'gemini extensions install',     detect: 'command:gemini' },
   { id: 'opencode',   label: 'opencode',            mech: 'native opencode plugin',        detect: 'command:opencode' },
+  { id: 'kimi',       label: 'Kimi Code CLI',       mech: 'native kimi skill',             detect: 'command:kimi' },
   { id: 'openclaw',   label: 'OpenClaw',            mech: 'workspace skill + SOUL.md',     detect: 'command:openclaw||dir:$HOME/.openclaw/workspace' },
   { id: 'codex',      label: 'Codex CLI',           mech: 'npx skills add (codex)',        detect: 'command:codex',           profile: 'codex' },
 
@@ -463,6 +464,7 @@ function installViaSkills(ctx, prov) {
 // architecture as closely as opencode allows — only the statusline is missing
 // (opencode's TUI exposes no plugin-writable badge).
 const OPENCODE_SKILL_DIRS  = ['caveman', 'caveman-commit', 'caveman-review', 'caveman-help', 'caveman-stats', 'caveman-compress', 'cavecrew'];
+const KIMI_SKILL_DIRS      = ['caveman', 'caveman-commit', 'caveman-review', 'caveman-help', 'caveman-stats', 'caveman-compress', 'cavecrew'];
 const OPENCODE_AGENT_FILES = ['cavecrew-investigator.md', 'cavecrew-builder.md', 'cavecrew-reviewer.md'];
 const OPENCODE_COMMAND_FILES = ['caveman.md', 'caveman-commit.md', 'caveman-review.md', 'caveman-compress.md', 'caveman-stats.md', 'caveman-help.md'];
 const OPENCODE_PLUGIN_REL = './plugins/caveman/plugin.js';
@@ -682,6 +684,56 @@ function installOpenclaw(ctx) {
   if (r.ok) results.installed.push('openclaw');
   else results.failed.push(['openclaw', r.reason || 'install failed']);
 
+  process.stdout.write('\n');
+}
+
+// ── Kimi native install ───────────────────────────────────────────────────
+// Drops caveman skills into ~/.kimi/skills/ where Kimi Code CLI auto-discovers
+// them. No config file edits needed — skill discovery is purely directory-based.
+function kimiConfigDir() {
+  return path.join(os.homedir(), '.kimi');
+}
+
+function installKimi(ctx) {
+  const { say, note, warn, opts, repoRoot, results } = ctx;
+  results.detected++;
+  say('→ Kimi Code CLI detected');
+
+  if (!repoRoot) {
+    warn('  kimi native install requires a local clone of the caveman repo.');
+    note('  Re-run from a clone: git clone https://github.com/' + REPO + ' && cd caveman && node bin/install.js --only kimi');
+    results.failed.push(['kimi', 'native install requires local repo clone']);
+    process.stdout.write('\n');
+    return;
+  }
+
+  const dir = kimiConfigDir();
+  const skillsDir = path.join(dir, 'skills');
+
+  if (opts.dryRun) {
+    note(`  would mkdir ${skillsDir}/`);
+    note(`  would copy ${KIMI_SKILL_DIRS.length} skill dirs into ${skillsDir}/`);
+    results.installed.push('kimi');
+    process.stdout.write('\n');
+    return;
+  }
+
+  try {
+    fs.mkdirSync(skillsDir, { recursive: true });
+    const skillSrcDir = path.join(repoRoot, 'skills');
+    for (const name of KIMI_SKILL_DIRS) {
+      const src = path.join(skillSrcDir, name);
+      const dest = path.join(skillsDir, name);
+      if (!fs.existsSync(src)) continue;
+      if (fs.existsSync(dest) && !opts.force) { note(`  skipped ${dest}/ (exists; --force to overwrite)`); continue; }
+      copyDirRecursive(src, dest);
+      process.stdout.write(`  installed: ${dest}/\n`);
+    }
+    results.installed.push('kimi');
+  } catch (e) {
+    warn('  kimi install failed: ' + (e && e.message || e));
+    results.failed.push(['kimi', (e && e.message) || 'unknown error']);
+  }
   process.stdout.write('\n');
 }
 
@@ -1016,6 +1068,19 @@ function uninstall(ctx) {
     if (r.touched) ok('  pruned caveman entries from OpenClaw workspace');
   }
 
+  // Kimi native install — remove skill dirs from ~/.kimi/skills/.
+  const kimiDir = kimiConfigDir();
+  let kimiTouched = false;
+  for (const name of KIMI_SKILL_DIRS) {
+    const p = path.join(kimiDir, 'skills', name);
+    if (fs.existsSync(p)) {
+      if (!opts.dryRun) { try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) {} }
+      note(`  removed ${p}`);
+      kimiTouched = true;
+    }
+  }
+  if (kimiTouched) ok('  pruned caveman skills from Kimi Code CLI');
+
   // Flag file
   const flag = path.join(configDir, '.caveman-active');
   if (fs.existsSync(flag) && !opts.dryRun) { try { fs.unlinkSync(flag); } catch (_) {} }
@@ -1164,6 +1229,7 @@ async function main() {
     if (prov.id === 'gemini')   { installGemini(ctx); continue; }
     if (prov.id === 'opencode') { installOpencode(ctx); continue; }
     if (prov.id === 'openclaw') { installOpenclaw(ctx); continue; }
+    if (prov.id === 'kimi')     { installKimi(ctx); continue; }
     if (prov.profile)           { installViaSkills(ctx, prov); continue; }
   }
 
